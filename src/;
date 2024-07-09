@@ -1,0 +1,39 @@
+use std::io::Write;
+use todo::Todo;
+
+fn main() {
+    let mut my_todo = Todo::new();
+    
+    loop {
+        println!("What do you want to do ? (add, print,  exit): ");
+        let mut input = String::new();
+
+        std::io::stdin().read_line(& mut input).expect("Could not read line from stdin");
+        input.pop();
+
+        match &input[..] {
+            "add" => add_task(& mut my_todo),
+            "print" => my_todo.print_tasks(),
+            "exit" => return,
+            _ => {
+                println!("Please enter a command !");
+                continue;
+            },
+        };
+
+        op_status.expect("Something went wrong aborting...");
+    }
+}
+
+fn add_task(my_todo: & mut Todo) -> Result<String,std::io::Error> {
+    let mut input = String::new();
+
+    std::io::stdout().write_all("Enter a task to add: ".as_bytes())?;
+    std::io::stdout().flush()?;
+    std::io::stdin().read_line(& mut input)?;
+    input.pop();
+
+    my_todo.add_task(input);
+
+    Ok(String::from("Succesfully added task to list"))
+}
