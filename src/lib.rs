@@ -11,11 +11,7 @@ impl Todo {
         self.tasks.push(task);
     }
 
-    pub fn print_tasks(& mut self) {
-        println!("You have tasks :");
-
-        for (serial_number, task) in self.tasks.iter().enumerate().map(|(a,b)| {(a + 1, b)}) {
-            println!("{serial_number}. {task}.");
-        }
+    pub fn print_tasks(& self) -> impl Iterator<Item = &String> {
+        self.tasks.iter()
     }
 }
