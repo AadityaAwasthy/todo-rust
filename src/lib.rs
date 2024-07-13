@@ -264,28 +264,3 @@ arguments:
     println!("{}", help);
     Ok(())
 }
-//
-// pub fn delete_task(my_todo: & mut Todo) {
-//     let mut input_index = get_prompt("Please enter the index of task to remove: ").parse::<usize>().unwrap();
-//
-//     input_index -= 1;
-//
-//     match my_todo.delete_task(input_index) {
-//         Ok(removed_task) => println!("Removed task {}: {removed_task}",input_index + 1),
-//         Err(error) => println!("Error: {error}"),
-//     }
-//
-//     return;
-// }
-//
-// pub fn print_task (my_todo: & Todo){
-//     let tasks_iterator = my_todo.print_tasks();
-//
-//     println!("You have tasks : ");
-//     for (serial_num, task) in tasks_iterator.enumerate().map(|(a,b)| {(a + 1, b)}) {
-//         println!("{serial_num}. {task}");
-//     }
-//
-// }
-//
-//
