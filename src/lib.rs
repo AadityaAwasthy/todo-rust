@@ -1,10 +1,12 @@
 use std::{io::Write, error::Error};
 use std::{process, sync::atomic::{AtomicU64, self}};
 use regex::Regex;
+use mysql::*;
+use mysql::prelude::*;
 
-pub struct Task {
+struct Task {
+    id: Option<u64>,
     task: String,
-    id: u64,
     status: bool,
 }
 
@@ -12,67 +14,127 @@ static UNIQUE_ID: AtomicU64  = AtomicU64::new(1);
 
 impl Task {
     fn new(task: String) -> Task {
-        let id: u64 = UNIQUE_ID.fetch_add(1, atomic::Ordering::SeqCst);
-        Task{task, id, status:false}
+        Task{id: None, task, status:false}
     }
 }
 
 pub struct Todo {
-    tasks: Vec<Task>,
+    pub id: u64,
+    pub name: String,
 }
 
 impl Todo {
-    pub fn new() -> Todo {
-        Todo {tasks: Vec::new()}
+    pub fn new(name: &str, conn: & mut PooledConn) -> Todo {
+
+        conn.exec_drop(r"INSERT INTO Todo (name) VALUES (:name)",
+             params! {
+                "name" => name,
+            }).expect("Could not execute query !");
+
+        let id = conn.last_insert_id();
+
+        Todo {id, name: String::from(name)}
     }
 
-    fn add_task(& mut self, task: Task) {
-        self.tasks.push(task);
+    fn exists(& self, task_id: u64, conn: &mut PooledConn) -> bool {
+        let result: Option<u64> = conn
+            .exec_first(
+                "SELECT COUNT(*) FROM Tasks WHERE task_id = :task_id and todo_id = :todo_id",
+                params! {
+                    "task_id" => task_id,
+                    "todo_id" => self.id,
+                },
+            )
+            .expect("Could not execute query");
+
+        match result {
+            Some(count) => count > 0,
+            None => false,
+        }
     }
 
-    fn delete_task(& mut self, id: u64) -> Result<(), &'static str> {
-        if !(self.tasks.iter().any(|task| task.id == id)) {
-            return Err("Invalid id");
+    fn add_task(& mut self, task: Task, conn: & mut PooledConn) {
+
+        conn.exec_drop(r"insert into Tasks (todo_id, description, status) 
+            values (:todo_id, :description, :status)", 
+                params! {
+                    "todo_id" => self.id,
+                    "description" => task.task,
+                    "status" => {
+                        if task.status {
+                            1
+                        } else {
+                            0
+                        }
+                    },
+                }).expect("Could not execute query !");
+    }
+
+    fn delete_task(& mut self, id: u64, conn: & mut PooledConn) -> Result<(), &'static str> {
+        if !self.exists(id, conn) {
+            return Err("No task with the given id");
         }
 
-        self.tasks.retain(|task| task.id != id);
+        conn.exec_drop("delete from Tasks
+            where todo_id = :todo_id and task_id = :task_id", params! {
+                "todo_id" => self.id,
+                "task_id" => id,
+            }).expect("Could not execute query");
+
         Ok(())
     }
 
-    fn update_task(& mut self, id: u64, task: &str ) -> Result<(), &'static str> {
-        if !(self.tasks.iter().any(|task| task.id == id)) {
-            return Err("Invalid id");
+    fn update_task(& mut self, id: u64, task: &str, conn: & mut PooledConn ) -> Result<(), &'static str> {
+        if !self.exists(id, conn) {
+            return Err("No task with the given id");
         }
 
-        self.tasks.iter_mut().for_each(|current_task| {
-            if current_task.id == id {
-                current_task.task = String::from(task);
-            }
-        });
+        conn.exec_drop("update Tasks 
+            set description = :task
+            where task_id = :task_id and todo_id = :todo_id",params! {
+                "task" => task,
+                "task_id" => id,
+                "todo_id" => self.id,
+            }).expect("Could not execute query");
 
         return Ok(());
     }
 
-    fn update_task_status(& mut self, id: u64) -> Result<(), &'static str> {
-        if !(self.tasks.iter().any(|task| task.id == id)) {
-            return Err("Invalid id");
+    fn update_task_status(& mut self, id: u64, conn: & mut PooledConn) -> Result<(), &'static str> {
+        if !self.exists(id, conn) {
+            return Err("No task with the given id");
         }
 
-        self.tasks.iter_mut().for_each(|current_task| {
-            if current_task.id == id {
-                current_task.status = true;
-            }
-        });
+        conn.exec_drop("update Tasks 
+            set status = 1 
+            where task_id = :task_id and todo_id = :todo_id",params! {
+                "task_id" => id,
+                "todo_id" => self.id,
+            }).expect("Could not execute query");
 
         return Ok(());
     }
 
-    fn get_tasks(& self) -> impl Iterator<Item = &Task> {
-        self.tasks.iter()
+    fn get_tasks(& self, conn: & mut PooledConn) -> Vec<Task> {
+        let tasks: Vec<Task> = conn.exec_map("select task_id, description, status 
+                   from Tasks
+                   where todo_id = :todo_id", params! {
+                       "todo_id" => self.id,
+                   },
+                   |(id, description, status): (u64, String, u64)| {
+                       Task {
+                           id: Some(id),
+                           task: String::from(description),
+                           status: status == 1,
+                       }
+                   },
+                   ).expect("Could not execute query");
+
+        tasks
     }
 }
 
-pub fn run_prompter(my_todo: & mut Todo)  {
+pub fn run_prompter(my_todo: & mut Todo, conn: & mut PooledConn)  {
 
     loop {
         let prompt = "> ";
@@ -95,12 +157,12 @@ pub fn run_prompter(my_todo: & mut Todo)  {
             }
         }
 
-        run(my_todo, args);
+        run(my_todo, args, conn);
     }
 }
 
 
-fn run(my_todo: & mut Todo, args: Vec<&str>) {
+fn run(my_todo: & mut Todo, args: Vec<&str>, conn: & mut PooledConn) {
 
     if(args.len() == 0) {
         return;
@@ -108,11 +170,11 @@ fn run(my_todo: & mut Todo, args: Vec<&str>) {
 
     let command = args[0];
     let command_result = match command {
-        "add" => add_command_parser(my_todo, args),
-        "list" => print_tasks(my_todo),
-        "delete" => delete_command_parser(my_todo, args),
-        "update" => update_command_parser(my_todo, args),
-        "done" => done_command_parser(my_todo, args),
+        "add" => add_command_parser(my_todo, args, conn),
+        "list" => print_tasks(my_todo, conn),
+        "delete" => delete_command_parser(my_todo, args, conn),
+        "update" => update_command_parser(my_todo, args, conn),
+        "done" => done_command_parser(my_todo, args, conn),
         "exit" => {
             process::exit(0);
         }
@@ -127,12 +189,12 @@ fn run(my_todo: & mut Todo, args: Vec<&str>) {
         return;
     }
 }
-//
-fn add_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),&'static str> {
+
+fn add_command_parser(my_todo: & mut Todo, args: Vec<&str>, conn: & mut PooledConn) -> Result<(),&'static str> {
     if let Some(task) = args.get(1) {
 
         let task = String::from(*task);
-        my_todo.add_task(Task::new(task));
+        my_todo.add_task(Task::new(task), conn);
 
         Ok(())
     } else {
@@ -140,7 +202,7 @@ fn add_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),&'stati
     }
 }
 
-fn update_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(), &'static str> {
+fn update_command_parser(my_todo: & mut Todo, args: Vec<&str>, conn: & mut PooledConn) -> Result<(), &'static str> {
     if let Some(task_id) = args.get(1) {
         if let Some(task) = args.get(2) {
 
@@ -148,7 +210,7 @@ fn update_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(), &'s
 
             match index {
                 Ok(index) => {
-                    return my_todo.update_task(index, *task);
+                    return my_todo.update_task(index, *task, conn);
                 }
                 Err(_) => {
                     return Err("Could not parse index");
@@ -163,13 +225,13 @@ fn update_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(), &'s
     }
 }
 
-fn delete_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),& 'static str> {
+fn delete_command_parser(my_todo: & mut Todo, args: Vec<&str>, conn: & mut PooledConn) -> Result<(),& 'static str> {
     if let Some(task_id) = args.get(1) {
         let index: Result<u64, _> = (*task_id).parse();
         
         match index {
             Ok(index) => {
-                return my_todo.delete_task(index);
+                return my_todo.delete_task(index, conn);
             }
             Err(_) => {
                 return Err("Could not parse the argument as integer");
@@ -181,13 +243,13 @@ fn delete_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),& 's
 }
 
 
-fn done_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),& 'static str> {
+fn done_command_parser(my_todo: & mut Todo, args: Vec<&str>, conn: & mut PooledConn) -> Result<(),& 'static str> {
     if let Some(task_id) = args.get(1) {
         let index: Result<u64, _> = (*task_id).parse();
         
         match index {
             Ok(index) => {
-                return my_todo.update_task_status(index);
+                return my_todo.update_task_status(index, conn);
             }
             Err(_) => {
                 return Err("Could not parse the argument as integer");
@@ -198,10 +260,10 @@ fn done_command_parser(my_todo: & mut Todo, args: Vec<&str>) -> Result<(),& 'sta
     }
 }
 
-fn print_tasks (my_todo: & mut Todo) -> Result<(), & 'static str> {
+fn print_tasks (my_todo: & mut Todo, conn: & mut PooledConn) -> Result<(), & 'static str> {
 
 
-    let task_list: Vec<&Task> = my_todo.get_tasks().collect();
+    let mut task_list: Vec<Task> = my_todo.get_tasks(conn);
     if (task_list.len() == 0) {
         println!("Your task list is empty !! use \"add\" to add tasks to your list.");
         return Ok(())
@@ -209,12 +271,18 @@ fn print_tasks (my_todo: & mut Todo) -> Result<(), & 'static str> {
 
     println!("Your task list :");
     for current_task in task_list {
-        let details = format!("{}. {}", current_task.id, current_task.task);
 
-        if (current_task.status) {
-            println!("X {details}");
-        } else {
-            println!("=> {details}");
+        if let Some(id) = current_task.id {
+            let details = format!("{}. {}", id, current_task.task);
+
+            if (current_task.status) {
+                println!("X {details}");
+            } else {
+                println!("=> {details}");
+            }
+        }
+        else {
+            panic!("There was some error retreiving tasks...");
         }
     }
 
@@ -263,4 +331,81 @@ arguments:
 
     println!("{}", help);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todo_add() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let my_todo = Todo::new("my_todo", & mut conn);
+    }
+
+    #[test]
+    fn task_add() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let mut my_todo = Todo::new("my_todo2", & mut conn);
+        add_command_parser(& mut my_todo, vec!["add","sleep"], &mut conn);
+    }
+
+    #[test]
+    fn get_tasks() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let mut my_todo = Todo::new("my_todo", & mut conn);
+        add_command_parser(& mut my_todo, vec!["add","eat"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","sleep"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","repeat"], &mut conn);
+
+        print_tasks(& mut my_todo, & mut conn);
+    }
+
+    #[test]
+    fn delete_task() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let mut my_todo = Todo::new("my_todo", & mut conn);
+
+        add_command_parser(& mut my_todo, vec!["add","eat"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","sleep"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","repeat"], &mut conn);
+
+        delete_command_parser(& mut my_todo, vec!["delete","29"], &mut conn).expect("fucked up");
+    }
+
+    #[test]
+    fn update_task() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let mut my_todo = Todo::new("my_todo", & mut conn);
+
+        add_command_parser(& mut my_todo, vec!["add","eat"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","sleep"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","repeat"], &mut conn);
+
+        update_command_parser(& mut my_todo, vec!["update","35", "hey man"], &mut conn).expect("fucked up");
+    }
+
+    #[test]
+    fn update_task_status() {
+        let pool = Pool::new("mysql://root:3021@localhost:3306/todo").unwrap();
+        let mut conn = pool.get_conn().unwrap();
+
+        let mut my_todo = Todo::new("my_todo", & mut conn);
+
+        add_command_parser(& mut my_todo, vec!["add","eat"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","sleep"], &mut conn);
+        add_command_parser(& mut my_todo, vec!["add","repeat"], &mut conn);
+
+        done_command_parser(& mut my_todo, vec!["done","44"], &mut conn).expect("fucked up");
+    }
 }
