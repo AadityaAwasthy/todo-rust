@@ -6,7 +6,8 @@ This is my first personal project, implemented from scratch in Rust. The main ai
 With this todo list manager you can add tasks, delete tasks, edit the descriptions of tasks and change the status of tasks from pending to done. The application provides simple commands to help users with these tasks.
 
 ## Commands 
-'''
+
+~~~
 structure of query: 
     command [arguments] 
 
@@ -43,5 +44,4 @@ arguments:
     task_id: the unique id assigned to each task. 
 
     task_string: the string for the task provided by the user. ";
-
-'''
+~~~
