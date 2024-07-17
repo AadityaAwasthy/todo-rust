@@ -3,6 +3,7 @@ use std::{process, sync::atomic::{AtomicU64, self}};
 use regex::Regex;
 use mysql::*;
 use mysql::prelude::*;
+use colored::Colorize;
 
 struct Task {
     id: Option<u64>,
@@ -137,8 +138,9 @@ impl Todo {
 pub fn run_prompter(my_todo: & mut Todo, conn: & mut PooledConn)  {
 
     loop {
-        let prompt = "> ";
-        std::io::stdout().write_all(prompt.as_bytes()).expect("Could not write out to stdout");
+        let prompt = "==> ".blue();
+        print!("{}", prompt);
+        // std::io::stdout().write_all(prompt.as_bytes()).expect("Could not write out to stdout");
         std::io::stdout().flush().expect("Could not flush buffer");
 
         let mut input = String::new();
@@ -273,12 +275,10 @@ fn print_tasks (my_todo: & mut Todo, conn: & mut PooledConn) -> Result<(), & 'st
     for current_task in task_list {
 
         if let Some(id) = current_task.id {
-            let details = format!("{}. {}", id, current_task.task);
-
             if (current_task.status) {
-                println!("X {details}");
+                println!("{}.({}) {}", id,"Done".green(), current_task.task);
             } else {
-                println!("=> {details}");
+                println!("{}.({}) {}", id,"Pending".red(), current_task.task);
             }
         }
         else {
